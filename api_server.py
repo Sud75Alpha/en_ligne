@@ -513,7 +513,9 @@ def mt5_data_thread():
 
     while True:
         try:
-            # ── Prix tick (toujours actif) ────────────────────────────────────
+            # ── Prix tick ─────────────────────────────────────────────────────
+            # Si le bot envoie des données, on ne met à jour les prix que
+            # depuis MT5 réel — jamais depuis la simulation
             if MT5_AVAILABLE and STATE.mt5_connected and STATE.gold_symbol:
                 tg = mt5.symbol_info_tick(STATE.gold_symbol)
                 td = mt5.symbol_info_tick(STATE.dxy_symbol) if STATE.dxy_symbol else None
@@ -521,25 +523,39 @@ def mt5_data_thread():
                 dxy_p  = float(td.bid) if td else sim_dxy
                 gold_b = float(tg.bid) if tg else gold_p
                 gold_a = float(tg.ask) if tg else gold_p + 0.3
-            else:
+                with STATE._lock:
+                    prev_g = STATE.gold_price or gold_p
+                    prev_d = STATE.dxy_price  or dxy_p
+                    STATE.gold_prev   = prev_g
+                    STATE.dxy_prev    = prev_d
+                    STATE.gold_price  = gold_p
+                    STATE.dxy_price   = dxy_p
+                    STATE.gold_bid    = gold_b
+                    STATE.gold_ask    = gold_a
+                    STATE.gold_change = round(gold_p - prev_g, 2)
+                    STATE.gold_pct    = round((gold_p - prev_g) / prev_g * 100, 3) if prev_g else 0.0
+                    STATE.dxy_change  = round(dxy_p - prev_d, 4)
+                    STATE.last_update = datetime.now().isoformat()
+            elif not STATE.bot_data_received:
+                # Simulation seulement si le bot n'a jamais envoyé de données
                 sim_gold += np.random.normal(0, 0.04)
                 sim_dxy  += np.random.normal(0, 0.002)
                 gold_p = round(sim_gold, 2); dxy_p = round(sim_dxy, 3)
                 gold_b = gold_p; gold_a = gold_p + 0.25
-
-            with STATE._lock:
-                prev_g = STATE.gold_price or gold_p
-                prev_d = STATE.dxy_price  or dxy_p
-                STATE.gold_prev   = prev_g
-                STATE.dxy_prev    = prev_d
-                STATE.gold_price  = gold_p
-                STATE.dxy_price   = dxy_p
-                STATE.gold_bid    = gold_b
-                STATE.gold_ask    = gold_a
-                STATE.gold_change = round(gold_p - prev_g, 2)
-                STATE.gold_pct    = round((gold_p - prev_g) / prev_g * 100, 3) if prev_g else 0.0
-                STATE.dxy_change  = round(dxy_p - prev_d, 4)
-                STATE.last_update = datetime.now().isoformat()
+                with STATE._lock:
+                    prev_g = STATE.gold_price or gold_p
+                    prev_d = STATE.dxy_price  or dxy_p
+                    STATE.gold_prev   = prev_g
+                    STATE.dxy_prev    = prev_d
+                    STATE.gold_price  = gold_p
+                    STATE.dxy_price   = dxy_p
+                    STATE.gold_bid    = gold_b
+                    STATE.gold_ask    = gold_a
+                    STATE.gold_change = round(gold_p - prev_g, 2)
+                    STATE.gold_pct    = round((gold_p - prev_g) / prev_g * 100, 3) if prev_g else 0.0
+                    STATE.dxy_change  = round(dxy_p - prev_d, 4)
+                    STATE.last_update = datetime.now().isoformat()
+            # Si bot_data_received=True et pas de MT5 → on laisse les prix du bot intacts
 
             # ── OHLCV + Zones + MTF — seulement si bot n'a pas envoyé de données ──
             ohlcv_tick += 1
@@ -700,8 +716,12 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mt5": STATE.mt5_connected,
-            "ws_clients": ws_manager.count, "bot_data": STATE.bot_data_received,
+    return {"status": "ok",
+            "mt5": STATE.mt5_connected,
+            "bot_data": STATE.bot_data_received,
+            "gold_price": STATE.gold_price,
+            "bot_status": STATE.bot_status,
+            "ws_clients": ws_manager.count,
             "time": datetime.now().isoformat()}
 
 @app.get("/api/snapshot")
@@ -832,12 +852,15 @@ def update_result(payload: ResultPayload, request: Request):
 
 @app.on_event("startup")
 async def startup_event():
-    threading.Thread(target=mt5_data_thread, daemon=True).start()
+    # mt5_data_thread supprimé — Render tourne sur Linux (pas de MT5)
+    # Toutes les données viennent du bot via POST /api/snapshot/push
     asyncio.create_task(broadcast_loop())
-    log.info(f"API v3.1 démarrée | HTTP+WS :{API_PORT}")
+    log.info(f"API v3.1 démarrée | HTTP :{API_PORT}")
     log.info(f"Snapshot push : POST /api/snapshot/push")
     log.info(f"Signal push   : POST /api/signal/push")
     log.info(f"Snapshot GET  : GET  /api/snapshot")
+    STATE.bot_status = "waiting_bot"
+    STATE.add_log("INFO", "API démarrée — en attente des données du bot...")
 
 
 if __name__ == "__main__":
