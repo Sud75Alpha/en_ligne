@@ -153,6 +153,11 @@ class GlobalState:
         self.winrate: float = 0.0
         self.wins:    int   = 0
         self.losses:  int   = 0
+        # Backtest
+        self.backtest_stats: Dict = {}
+        self.backtest_trades: List[Dict] = []
+        self.backtest_equity: List[Dict] = []
+        self.backtest_patterns: Dict = {}
         # Statut
         self.bot_status:    str           = "starting"
         self.mt5_connected: bool          = False
@@ -250,6 +255,17 @@ class GlobalState:
             self.losses  = len(closed) - self.wins
             self.winrate = round(self.wins / len(closed) * 100, 1)
 
+    def update_last_open_result(self, result: str):
+        with self._lock:
+            for s in reversed(self.signals):
+                if s.get("result") == "OPEN":
+                    s["result"] = result
+                    break
+            self._update_winrate()
+            self._save_signals()
+            self.current_signal["direction"] = "WAIT"
+            self.current_signal["time"] = datetime.now().isoformat()
+
     def _load_signals(self):
         try:
             if os.path.exists("signals.json"):
@@ -328,6 +344,10 @@ class GlobalState:
                 "mtf_analysis":  dict(self.mtf_analysis),
                 "ohlcv":         {k: v for k, v in self.ohlcv.items()},
                 "zones":         dict(self.zones),
+                "backtest_stats": self.backtest_stats,
+                "backtest_trades": self.backtest_trades[-100:] if self.backtest_trades else [],
+                "backtest_equity": self.backtest_equity,
+                "backtest_patterns": self.backtest_patterns,
                 "winrate":       self.winrate,
                 "wins":          self.wins,
                 "losses":        self.losses,
@@ -837,17 +857,58 @@ def push_log(payload: LogPayload, request: Request):
 
 
 class ResultPayload(BaseModel):
-    signal_id: int; result: str
+    signal_id: Optional[int] = None
+    result: str
 
 @app.post("/api/signal/result")
-def update_result(payload: ResultPayload, request: Request):
+async def update_result(payload: ResultPayload, request: Request):
+    _auth(request)
+    if payload.signal_id is None:
+        STATE.update_last_open_result(payload.result)
+    else:
+        with STATE._lock:
+            for s in STATE.signals:
+                if s.get("id") == payload.signal_id:
+                    s["result"] = payload.result; break
+            STATE._update_winrate(); STATE._save_signals()
+            STATE.current_signal["direction"] = "WAIT"
+            STATE.current_signal["time"] = datetime.now().isoformat()
+    await ws_manager.broadcast(STATE.signal_frame())
+    return {"status": "ok"}
+
+class BacktestPayload(BaseModel):
+    stats: Dict = {}
+    trades: List[Dict] = []
+    equity: List[Dict] = []
+    patterns: Dict = {}
+
+@app.post("/api/backtest/push")
+def push_backtest(payload: BacktestPayload, request: Request):
     _auth(request)
     with STATE._lock:
-        for s in STATE.signals:
-            if s.get("id") == payload.signal_id:
-                s["result"] = payload.result; break
-        STATE._update_winrate(); STATE._save_signals()
+        STATE.backtest_stats = payload.stats
+        STATE.backtest_trades = payload.trades
+        STATE.backtest_equity = payload.equity
+        STATE.backtest_patterns = payload.patterns
+    STATE.add_log("INFO", "Backtest results mis à jour.")
     return {"status": "ok"}
+
+@app.get("/api/backtest")
+def get_backtest(request: Request):
+    _auth(request)
+    with STATE._lock:
+        return {
+            "stats": STATE.backtest_stats,
+            "trades": STATE.backtest_trades,
+            "equity": STATE.backtest_equity,
+            "patterns": STATE.backtest_patterns
+        }
+
+@app.get("/api/signals")
+def get_signals(request: Request):
+    _auth(request)
+    with STATE._lock:
+        return STATE.signals
 
 
 @app.on_event("startup")
