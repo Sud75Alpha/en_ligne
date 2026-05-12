@@ -916,12 +916,52 @@ async def startup_event():
     # mt5_data_thread supprimé — Render tourne sur Linux (pas de MT5)
     # Toutes les données viennent du bot via POST /api/snapshot/push
     asyncio.create_task(broadcast_loop())
+
+    # ── Rechargement backtest depuis fichier (survit aux restarts Render) ───
+    _load_backtest_from_file()
+
     log.info(f"API v3.1 démarrée | HTTP :{API_PORT}")
     log.info(f"Snapshot push : POST /api/snapshot/push")
     log.info(f"Signal push   : POST /api/signal/push")
     log.info(f"Snapshot GET  : GET  /api/snapshot")
     STATE.bot_status = "waiting_bot"
     STATE.add_log("INFO", "API démarrée — en attente des données du bot...")
+
+
+_BACKTEST_FILE = "backtest_results.json"
+
+def _save_backtest_to_file():
+    """Persiste les résultats backtest sur disque (redondance restart)."""
+    try:
+        data = {
+            "stats":    STATE.backtest_stats,
+            "trades":   STATE.backtest_trades,
+            "equity":   STATE.backtest_equity,
+            "patterns": STATE.backtest_patterns,
+        }
+        with open(_BACKTEST_FILE, "w") as f:
+            json.dump(data, f, default=str)
+        log.info("backtest_results.json sauvegardé sur disque")
+    except Exception as e:
+        log.warning(f"Sauvegarde backtest fichier : {e}")
+
+def _load_backtest_from_file():
+    """Charge les résultats backtest depuis le disque au démarrage."""
+    if not os.path.exists(_BACKTEST_FILE):
+        return
+    try:
+        with open(_BACKTEST_FILE) as f:
+            data = json.load(f)
+        with STATE._lock:
+            STATE.backtest_stats    = data.get("stats",    {})
+            STATE.backtest_trades   = data.get("trades",   [])
+            STATE.backtest_equity   = data.get("equity",   [])
+            STATE.backtest_patterns = data.get("patterns", {})
+        log.info(f"Backtest rechargé depuis fichier — {len(STATE.backtest_trades)} trades")
+    except Exception as e:
+        log.warning(f"Chargement backtest fichier : {e}")
+
+
 
 
 if __name__ == "__main__":
