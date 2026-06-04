@@ -1,19 +1,8 @@
-# Gold/DXY Pro v3 — Requirements
-
-# Dashboard
-streamlit>=1.35.0
-plotly>=5.20.0
-pandas>=2.0.0
-numpy>=1.26.0
-requests>=2.31.0
-websocket-client>=1.7.0
-
-# API Server
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-pydantic>=2.6.0
-python-dotenv>=1.0.0
-websockets>=12.0
-
-# MT5 Windows uniquement
-# MetaTrader5>=5.0.45
+fastapi==0.111.0
+uvicorn==0.29.0
+numpy==1.26.4
+pandas==2.2.2
+requests==2.31.0
+python-dotenv==1.0.1
+websockets==12.0
+pydantic==2.7.1
